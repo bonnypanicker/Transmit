@@ -63,8 +63,7 @@ class MainActivity : ComponentActivity() {
         if (!permissionGrantedState.value) {
             permissionRequest.launch(
                 arrayOf(
-                    Manifest.permission.CAMERA,
-                    Manifest.permission.FLASHLIGHT
+                    Manifest.permission.CAMERA
                 )
             )
         }
@@ -86,27 +85,31 @@ class MainActivity : ComponentActivity() {
                     startCamera(
                         context = context,
                         previewView = previewView,
-                        analyzer = CameraAnalyzer(rxPipeline) { result ->
-                            handler.post {
-                                receiverState = receiverState.copy(
-                                    signal = result.signal,
-                                    locked = result.locked
-                                )
-                                val packet = result.packet
-                                if (packet != null) {
-                                    totalPackets += 1
-                                    if (!packet.crcOk) {
-                                        crcFailures += 1
-                                    } else {
-                                        receiverState = receiverState.copy(
-                                            lastMessage = packet.payload.toString(Charsets.UTF_8)
-                                        )
+                        analyzer = CameraAnalyzer(
+                            pipeline = rxPipeline,
+                            onUpdate = { result ->
+                                handler.post {
+                                    receiverState = receiverState.copy(
+                                        signal = result.signal,
+                                        locked = result.locked
+                                    )
+                                    val packet = result.packet
+                                    if (packet != null) {
+                                        totalPackets += 1
+                                        if (!packet.crcOk) {
+                                            crcFailures += 1
+                                        } else {
+                                            receiverState = receiverState.copy(
+                                                lastMessage = packet.payload.toString(Charsets.UTF_8)
+                                            )
+                                        }
+                                        val errorRate = if (totalPackets == 0) 0f else crcFailures.toFloat() / totalPackets
+                                        receiverState = receiverState.copy(errorRate = errorRate)
                                     }
-                                    val errorRate = if (totalPackets == 0) 0f else crcFailures.toFloat() / totalPackets
-                                    receiverState = receiverState.copy(errorRate = errorRate)
                                 }
-                            }
-                        } { receivingFlag.get() },
+                            },
+                            isReceiving = { receivingFlag.get() }
+                        ),
                         executor = cameraExecutor
                     )
                 }
@@ -153,8 +156,7 @@ class MainActivity : ComponentActivity() {
 
     private fun hasPermissions(): Boolean {
         val camera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        val flash = ContextCompat.checkSelfPermission(this, Manifest.permission.FLASHLIGHT) == PackageManager.PERMISSION_GRANTED
-        return camera && flash
+        return camera
     }
 
     private fun rememberTorch(context: Context): FlashController? {
