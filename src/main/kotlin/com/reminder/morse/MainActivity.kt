@@ -111,7 +111,11 @@ class MainActivity : ComponentActivity() {
                         executor = cameraExecutor,
                         onCameraReady = { camera ->
                             val hasFlash = camera?.cameraInfo?.hasFlashUnit() == true
-                            torchController = if (hasFlash) FlashController(camera.cameraControl) else null
+                            torchController = if (hasFlash && camera != null) {
+                                FlashController(camera.cameraControl)
+                            } else {
+                                null
+                            }
                         }
                     )
                 } else {
@@ -192,6 +196,7 @@ private fun startCamera(
                 )
                 onCameraReady(camera)
             } catch (e: Exception) {
+                e.printStackTrace()
                 onCameraReady(null)
             }
         },
