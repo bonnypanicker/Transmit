@@ -1,15 +1,14 @@
 package com.reminder.morse
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
-import android.hardware.camera2.CameraManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -35,7 +34,6 @@ import com.reminder.morse.rx.RxFrameResult
 import com.reminder.morse.rx.RxPipeline
 import com.reminder.morse.tx.FlashController
 import com.reminder.morse.tx.FlashTransmitter
-import com.reminder.morse.tx.TorchSelector
 import com.reminder.morse.tx.TxPipeline
 import com.reminder.morse.ui.OpticalCommScreen
 import com.reminder.morse.ui.ReceiverState
@@ -75,8 +73,8 @@ class MainActivity : ComponentActivity() {
             var totalPackets by remember { mutableIntStateOf(0) }
             var crcFailures by remember { mutableIntStateOf(0) }
             val rxPipeline = remember { RxPipeline() }
-            val torch = remember { rememberTorch(context) }
-            val transmitter = remember(torch) { torch?.let { FlashTransmitter(it) } }
+            var torchController by remember { mutableStateOf<FlashController?>(null) }
+            val transmitter = remember(torchController) { torchController?.let { FlashTransmitter(it) } }
             val txPipeline = remember(transmitter) { transmitter?.let { TxPipeline(it) } }
             val receivingFlag = remember { AtomicBoolean(false) }
 
@@ -110,8 +108,14 @@ class MainActivity : ComponentActivity() {
                             },
                             isReceiving = { receivingFlag.get() }
                         ),
-                        executor = cameraExecutor
+                        executor = cameraExecutor,
+                        onCameraReady = { camera ->
+                            val hasFlash = camera?.cameraInfo?.hasFlashUnit() == true
+                            torchController = if (hasFlash) FlashController(camera.cameraControl) else null
+                        }
                     )
+                } else {
+                    torchController = null
                 }
             }
 
@@ -159,36 +163,37 @@ class MainActivity : ComponentActivity() {
         return camera
     }
 
-    private fun rememberTorch(context: Context): FlashController? {
-        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val cameraId = TorchSelector.findTorchCameraId(cameraManager) ?: return null
-        return FlashController(cameraManager, cameraId)
-    }
 }
 
 private fun startCamera(
-    context: Context,
+    context: android.content.Context,
     previewView: PreviewView,
     analyzer: ImageAnalysis.Analyzer,
-    executor: ExecutorService
+    executor: ExecutorService,
+    onCameraReady: (Camera?) -> Unit
 ) {
     val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
     cameraProviderFuture.addListener(
         {
-            val cameraProvider = cameraProviderFuture.get()
-            val preview = Preview.Builder().build()
-            preview.setSurfaceProvider(previewView.surfaceProvider)
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-            analysis.setAnalyzer(executor, analyzer)
-            cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(
-                context as ComponentActivity,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                preview,
-                analysis
-            )
+            try {
+                val cameraProvider = cameraProviderFuture.get()
+                val preview = Preview.Builder().build()
+                preview.setSurfaceProvider(previewView.surfaceProvider)
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                analysis.setAnalyzer(executor, analyzer)
+                cameraProvider.unbindAll()
+                val camera = cameraProvider.bindToLifecycle(
+                    context as ComponentActivity,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    analysis
+                )
+                onCameraReady(camera)
+            } catch (e: Exception) {
+                onCameraReady(null)
+            }
         },
         ContextCompat.getMainExecutor(context)
     )
