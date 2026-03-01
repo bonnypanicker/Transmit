@@ -25,7 +25,7 @@ object Manchester {
             when {
                 !a && b -> decoded.add(true)
                 a && !b -> decoded.add(false)
-                else -> throw IllegalArgumentException("Invalid Manchester symbol")
+                else -> { /* Bug #3 Fix: Invalid pair — noise, skip gracefully instead of throwing */ }
             }
             i += 2
         }

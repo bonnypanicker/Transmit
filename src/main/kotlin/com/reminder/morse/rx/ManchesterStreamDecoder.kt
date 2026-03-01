@@ -10,6 +10,11 @@ class ManchesterStreamDecoder {
         }
         val endExclusive = if (remaining % 2 == 0) symbols.size else symbols.size - 1
         val slice = symbols.subList(startIndex, endExclusive)
-        return Manchester.decode(slice)
+        // Bug #3 Fix: Safety net — catch any decoding exception gracefully
+        return try {
+            Manchester.decode(slice)
+        } catch (e: IllegalArgumentException) {
+            emptyList()
+        }
     }
 }

@@ -12,5 +12,6 @@ data class ReceiverState(
     val lastMessage: String = "",
     val signal: Float = 0f,
     val locked: Boolean = false,
-    val errorRate: Float = 0f
+    val errorRate: Float = 0f,
+    val detectionMode: String = ""
 )

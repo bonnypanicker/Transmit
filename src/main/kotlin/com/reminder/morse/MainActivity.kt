@@ -89,7 +89,8 @@ class MainActivity : ComponentActivity() {
                                 handler.post {
                                     receiverState = receiverState.copy(
                                         signal = result.signal,
-                                        locked = result.locked
+                                        locked = result.locked,
+                                        detectionMode = result.detectionMode
                                     )
                                     val packet = result.packet
                                     if (packet != null) {
@@ -157,6 +158,12 @@ class MainActivity : ComponentActivity() {
                 onStopReceive = {
                     receivingFlag.set(false)
                     receiverState = receiverState.copy(isReceiving = false)
+                },
+                onViewfinderTap = { nx, ny ->
+                    rxPipeline.setManualLock(nx, ny)
+                },
+                onClearLock = {
+                    rxPipeline.clearManualLock()
                 }
             )
         }
@@ -214,12 +221,21 @@ private class CameraAnalyzer(
             image.close()
             return
         }
-        val buffer = image.planes[0].buffer
-        val data = buffer.toByteArray()
-        val frame = FrameBuffer(width = image.width, height = image.height, luminance = data)
-        val result = pipeline.processFrame(frame)
-        onUpdate(result)
-        image.close()
+        // Bug #3 Fix: Guard the entire analysis with try/catch to prevent thread death
+        try {
+            // Bug #1 Fix: Pass image timestamp for clock recovery
+            val timestampMs = image.imageInfo.timestamp / 1_000_000L
+            val rotation = image.imageInfo.rotationDegrees
+            val buffer = image.planes[0].buffer
+            val data = buffer.toByteArray()
+            val frame = FrameBuffer(width = image.width, height = image.height, luminance = data)
+            val result = pipeline.processFrame(frame, timestampMs, rotation)
+            onUpdate(result)
+        } catch (e: Exception) {
+            android.util.Log.e("CameraAnalyzer", "Frame processing error: ${e.message}", e)
+        } finally {
+            image.close()
+        }
     }
 }
 

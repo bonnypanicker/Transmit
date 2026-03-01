@@ -24,9 +24,10 @@ object BitCodec {
         for (i in bytes.indices) {
             var value = 0
             for (j in 0..7) {
-                val bitIndex = if (msbFirst) j else 7 - j
                 if (bits[i * 8 + j]) {
-                    value = value or (1 shl (7 - bitIndex))
+                    // Bug #6 Fix: Correct shift — MSB-first: bit 0 → position 7; LSB-first: bit 0 → position 0
+                    val shift = if (msbFirst) (7 - j) else j
+                    value = value or (1 shl shift)
                 }
             }
             bytes[i] = value.toByte()

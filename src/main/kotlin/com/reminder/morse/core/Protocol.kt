@@ -9,6 +9,9 @@ data class ParsedPacket(
 object Protocol {
     val preambleBits: List<Boolean> = List(16) { index -> index % 2 == 0 }
 
+    // Bug #4 Fix: Manchester-encode the preamble so it runs at the same symbol rate as data
+    val preambleSymbols: List<Boolean> = Manchester.encode(preambleBits)
+
     fun buildPacket(payload: ByteArray): ByteArray {
         require(payload.size <= 255) { "Payload too large" }
         val body = ByteArray(1 + payload.size)
@@ -24,10 +27,11 @@ object Protocol {
     fun buildTxSymbols(payload: ByteArray): List<Boolean> {
         val packet = buildPacket(payload)
         val bits = BitCodec.bytesToBits(packet, msbFirst = true)
-        val symbols = Manchester.encode(bits)
-        val combined = ArrayList<Boolean>(preambleBits.size + symbols.size)
-        combined.addAll(preambleBits)
-        combined.addAll(symbols)
+        val dataSymbols = Manchester.encode(bits)
+        // Bug #4 Fix: Preamble is now Manchester-encoded too — same symbol rate as data
+        val combined = ArrayList<Boolean>(preambleSymbols.size + dataSymbols.size)
+        combined.addAll(preambleSymbols)
+        combined.addAll(dataSymbols)
         return combined
     }
 
