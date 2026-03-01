@@ -12,8 +12,7 @@ data class RxFrameResult(
 )
 
 class RxPipeline(
-    private val roiTracker: RoiTracker = RoiTracker(halfSize = 50),
-    private val smoother: SignalSmoother = SignalSmoother(),
+    private val blinkTracker: BlinkTracker = BlinkTracker(),
     private val threshold: AdaptiveThreshold = AdaptiveThreshold(),
     private val manchesterDecoder: ManchesterStreamDecoder = ManchesterStreamDecoder(),
     private val assembler: PacketAssembler = PacketAssembler(),
@@ -28,23 +27,14 @@ class RxPipeline(
     private var lastThresh = 0f
     private var preambleFoundOnce = false
 
-    /* ---- Manual lock delegation ---- */
-
-    fun setManualLock(normalizedX: Float, normalizedY: Float) {
-        roiTracker.setManualLock(normalizedX, normalizedY)
-    }
-
-    fun clearManualLock() {
-        roiTracker.clearManualLock()
-    }
-
-    val isManuallyLocked: Boolean get() = roiTracker.isManuallyLocked
+    // Track the last valid blink center to tolerate 1-frame drops
+    private var lastValidPoint: Point? = null
+    private var pointLostFrames = 0
 
     /* ---- Lifecycle ---- */
 
     fun reset() {
-        roiTracker.reset()
-        smoother.reset()
+        blinkTracker.reset()
         threshold.reset()
         assembler.reset()
         symbolBuffer.clear()
@@ -55,32 +45,52 @@ class RxPipeline(
         lastAvgSignal = 0f
         lastThresh = 0f
         preambleFoundOnce = false
+        lastValidPoint = null
+        pointLostFrames = 0
     }
 
     /* ---- Frame processing ---- */
 
     fun processFrame(
         buffer: FrameBuffer,
-        timestampMs: Long = System.currentTimeMillis(),
-        rotationDegrees: Int = 0
+        timestampMs: Long = System.currentTimeMillis()
     ): RxFrameResult {
-        val (roi, _) = roiTracker.update(buffer, rotationDegrees)
-        val signal = SignalExtractor.extract(buffer, roi)
+        // Track the blinking signal
+        val targetPoint = blinkTracker.update(buffer)
+        
+        if (targetPoint != null) {
+            lastValidPoint = targetPoint
+            pointLostFrames = 0
+        } else {
+            pointLostFrames++
+            if (pointLostFrames > 15) { // Drop lock after ~500ms
+                lastValidPoint = null
+            }
+        }
 
-        // Use RAW signal for bit detection — do NOT use the smoother here.
-        // The smoother's moving average bleeds across bit boundaries, corrupting
-        // ON→OFF transitions and making OFF bits look like ON bits.
-        // Clock recovery already averages within each bit period cleanly.
+        val activePoint = targetPoint ?: lastValidPoint
+        
+        val signal = if (activePoint != null) {
+            // Sample a 40x40 box around the active point
+            val roi = Roi(
+                activePoint.x - 20, activePoint.y - 20, 
+                activePoint.x + 20, activePoint.y + 20
+            )
+            SignalExtractor.extract(buffer, roi)
+        } else {
+            0f
+        }
+        
+        val detectionMode = if (activePoint != null) "\uD83D\uDD0D Blink Locked" else "\uD83D\uDD04 Scanning Grid..."
+
+        // Process temporal bits
         pendingFrameBrightness.add(signal)
 
-        // Phase Locked Loop (PLL) Clock Recovery
-        // We detect sharp edges to resynchronize our sampling window with the transmitter.
         val lastSignal = if (pendingFrameBrightness.size > 1) pendingFrameBrightness[pendingFrameBrightness.size - 2] else signal
         val isEdge = kotlin.math.abs(signal - lastSignal) > 60f
         
         val elapsed = timestampMs - lastBitBoundaryMs
         val timeUp = elapsed >= bitDurationMs
-        // If we see an edge and we are heavily into the symbol duration, force early sync
         val edgeTrigger = isEdge && elapsed >= (bitDurationMs * 0.6f)
         
         val forceBoundary = timeUp || edgeTrigger
@@ -89,15 +99,13 @@ class RxPipeline(
             val debugStr = buildDebugString()
             return RxFrameResult(
                 packet = null, signal = signal,
-                locked = locked, detectionMode = roiTracker.lastDetectionMode,
+                locked = locked, detectionMode = detectionMode,
                 debug = debugStr
             )
         }
 
-        // Bit boundary reached
         lastBitBoundaryMs = timestampMs
         
-        // If it was an edge trigger, the current frame (which triggered the edge) belongs to the NEW symbol.
         val framesForCurrentSymbol = if (edgeTrigger && pendingFrameBrightness.size > 1) {
             val valid = ArrayList(pendingFrameBrightness.take(pendingFrameBrightness.size - 1))
             pendingFrameBrightness.clear()
@@ -120,7 +128,6 @@ class RxPipeline(
         var packet: ParsedPacket? = null
 
         if (!locked) {
-            // ── SEARCHING state: scan for preamble ──
             val start = PreambleDetector.findStart(
                 symbolBuffer, Protocol.preambleSymbols, maxErrors = 6
             )
@@ -146,7 +153,6 @@ class RxPipeline(
                 }
             }
         } else {
-            // ── RECEIVING state: feed symbols to Manchester decoder ──
             receivedSymbolCount++
 
             if (symbolBuffer.size >= 2) {
@@ -180,7 +186,7 @@ class RxPipeline(
         val debugStr = buildDebugString()
         return RxFrameResult(
             packet = packet, signal = signal,
-            locked = locked, detectionMode = roiTracker.lastDetectionMode,
+            locked = locked, detectionMode = detectionMode,
             debug = debugStr
         )
     }

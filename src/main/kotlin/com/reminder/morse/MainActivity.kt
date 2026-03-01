@@ -159,12 +159,6 @@ class MainActivity : ComponentActivity() {
                 onStopReceive = {
                     receivingFlag.set(false)
                     receiverState = receiverState.copy(isReceiving = false)
-                },
-                onViewfinderTap = { nx, ny ->
-                    rxPipeline.setManualLock(nx, ny)
-                },
-                onClearLock = {
-                    rxPipeline.clearManualLock()
                 }
             )
         }
@@ -226,11 +220,10 @@ private class CameraAnalyzer(
         try {
             // Bug #1 Fix: Pass image timestamp for clock recovery
             val timestampMs = image.imageInfo.timestamp / 1_000_000L
-            val rotation = image.imageInfo.rotationDegrees
             val buffer = image.planes[0].buffer
             val data = buffer.toByteArray()
             val frame = FrameBuffer(width = image.width, height = image.height, luminance = data)
-            val result = pipeline.processFrame(frame, timestampMs, rotation)
+            val result = pipeline.processFrame(frame, timestampMs)
             onUpdate(result)
         } catch (e: Exception) {
             android.util.Log.e("CameraAnalyzer", "Frame processing error: ${e.message}", e)
