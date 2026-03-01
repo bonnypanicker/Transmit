@@ -87,7 +87,7 @@ class RxPipeline(
         pendingFrameBrightness.add(signal)
 
         val lastSignal = if (pendingFrameBrightness.size > 1) pendingFrameBrightness[pendingFrameBrightness.size - 2] else signal
-        val isEdge = kotlin.math.abs(signal - lastSignal) > 60f
+        val isEdge = kotlin.math.abs(signal - lastSignal) > 30f
         
         val elapsed = timestampMs - lastBitBoundaryMs
         val timeUp = elapsed >= bitDurationMs

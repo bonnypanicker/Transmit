@@ -98,6 +98,9 @@ class MainActivity : ComponentActivity() {
                                         totalPackets += 1
                                         if (!packet.crcOk) {
                                             crcFailures += 1
+                                            receiverState = receiverState.copy(
+                                                lastMessage = "[ERR] " + packet.payload.toString(Charsets.UTF_8)
+                                            )
                                         } else {
                                             receiverState = receiverState.copy(
                                                 lastMessage = packet.payload.toString(Charsets.UTF_8)

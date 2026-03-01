@@ -25,7 +25,9 @@ object Manchester {
             when {
                 !a && b -> decoded.add(true)
                 a && !b -> decoded.add(false)
-                else -> { /* Bug #3 Fix: Invalid pair — noise, skip gracefully instead of throwing */ }
+                else -> { 
+                    decoded.add(false) // Emit dummy bit to preserve temporal byte alignment!
+                }
             }
             i += 2
         }
