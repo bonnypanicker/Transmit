@@ -1,6 +1,5 @@
 package com.reminder.morse.rx
 
-import com.reminder.morse.core.Manchester
 import com.reminder.morse.core.ParsedPacket
 import com.reminder.morse.core.Protocol
 
@@ -8,7 +7,8 @@ data class RxFrameResult(
     val packet: ParsedPacket?,
     val signal: Float,
     val locked: Boolean,
-    val detectionMode: String = ""
+    val detectionMode: String = "",
+    val debug: String = ""
 )
 
 class RxPipeline(
@@ -23,7 +23,10 @@ class RxPipeline(
     private var locked = false
     private var lastBitBoundaryMs = 0L
     private val pendingFrameBrightness = ArrayList<Float>()
-    private var receivedSymbolCount = 0  // symbols received since lock, for timeout
+    private var receivedSymbolCount = 0
+    private var lastAvgSignal = 0f
+    private var lastThresh = 0f
+    private var preambleFoundOnce = false
 
     /* ---- Manual lock delegation ---- */
 
@@ -49,6 +52,9 @@ class RxPipeline(
         locked = false
         lastBitBoundaryMs = 0L
         receivedSymbolCount = 0
+        lastAvgSignal = 0f
+        lastThresh = 0f
+        preambleFoundOnce = false
     }
 
     /* ---- Frame processing ---- */
@@ -60,15 +66,21 @@ class RxPipeline(
     ): RxFrameResult {
         val (roi, _) = roiTracker.update(buffer, rotationDegrees)
         val signal = SignalExtractor.extract(buffer, roi)
-        val smoothed = smoother.smooth(signal)
-        pendingFrameBrightness.add(smoothed)
+
+        // Use RAW signal for bit detection — do NOT use the smoother here.
+        // The smoother's moving average bleeds across bit boundaries, corrupting
+        // ON→OFF transitions and making OFF bits look like ON bits.
+        // Clock recovery already averages within each bit period cleanly.
+        pendingFrameBrightness.add(signal)
 
         // Clock recovery: accumulate frames within a bit period
         val elapsed = timestampMs - lastBitBoundaryMs
         if (elapsed < bitDurationMs && lastBitBoundaryMs != 0L) {
+            val debugStr = buildDebugString()
             return RxFrameResult(
-                packet = null, signal = smoothed,
-                locked = locked, detectionMode = roiTracker.lastDetectionMode
+                packet = null, signal = signal,
+                locked = locked, detectionMode = roiTracker.lastDetectionMode,
+                debug = debugStr
             )
         }
 
@@ -76,8 +88,10 @@ class RxPipeline(
         lastBitBoundaryMs = timestampMs
         val avgSignal = pendingFrameBrightness.average().toFloat()
         pendingFrameBrightness.clear()
+        lastAvgSignal = avgSignal
 
         val thresh = threshold.update(avgSignal, isLocked = locked)
+        lastThresh = thresh
         val symbol = OnOffDetector.detect(avgSignal, thresh)
         symbolBuffer.add(symbol)
 
@@ -86,13 +100,12 @@ class RxPipeline(
         if (!locked) {
             // ── SEARCHING state: scan for preamble ──
             val start = PreambleDetector.findStart(
-                symbolBuffer, Protocol.preambleSymbols, maxErrors = 2
+                symbolBuffer, Protocol.preambleSymbols, maxErrors = 6
             )
             if (start >= 0) {
+                preambleFoundOnce = true
                 val decodeStart = start + Protocol.preambleSymbols.size
                 val bits = manchesterDecoder.decode(symbolBuffer, decodeStart)
-
-                // Clear everything — we extracted what we need from the buffer
                 symbolBuffer.clear()
                 receivedSymbolCount = 0
 
@@ -106,19 +119,16 @@ class RxPipeline(
                     locked = false
                 }
             } else {
-                // Prevent unbounded growth while searching
                 if (symbolBuffer.size > 512) {
                     symbolBuffer.subList(0, symbolBuffer.size - 64).clear()
                 }
             }
         } else {
-            // ── RECEIVING state: keep feeding symbols to the Manchester decoder ──
+            // ── RECEIVING state: feed symbols to Manchester decoder ──
             receivedSymbolCount++
 
             if (symbolBuffer.size >= 2) {
-                // Decode complete pairs, keep any leftover odd symbol
-                val pairCount = symbolBuffer.size / 2
-                val consumeCount = pairCount * 2
+                val consumeCount = (symbolBuffer.size / 2) * 2
                 val bits = manchesterDecoder.decode(symbolBuffer, 0)
 
                 if (consumeCount > 0) {
@@ -137,9 +147,6 @@ class RxPipeline(
                 }
             }
 
-            // Timeout: if we've received too many symbols without completing
-            // a packet, something went wrong — go back to searching
-            // (max packet ~ 255 bytes = 2040 bits = 4080 Manchester symbols)
             if (receivedSymbolCount > 4200) {
                 assembler.reset()
                 symbolBuffer.clear()
@@ -148,9 +155,17 @@ class RxPipeline(
             }
         }
 
+        val debugStr = buildDebugString()
         return RxFrameResult(
-            packet = packet, signal = smoothed,
-            locked = locked, detectionMode = roiTracker.lastDetectionMode
+            packet = packet, signal = signal,
+            locked = locked, detectionMode = roiTracker.lastDetectionMode,
+            debug = debugStr
         )
+    }
+
+    private fun buildDebugString(): String {
+        val state = if (locked) "RX(${receivedSymbolCount}sym)" else "SEARCH(${symbolBuffer.size}sym)"
+        val preamble = if (preambleFoundOnce) "pre:✓" else "pre:✗"
+        return "$state $preamble avg:${"%.0f".format(lastAvgSignal)} thr:${"%.0f".format(lastThresh)}"
     }
 }

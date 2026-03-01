@@ -90,7 +90,8 @@ class MainActivity : ComponentActivity() {
                                     receiverState = receiverState.copy(
                                         signal = result.signal,
                                         locked = result.locked,
-                                        detectionMode = result.detectionMode
+                                        detectionMode = result.detectionMode,
+                                        debug = result.debug
                                     )
                                     val packet = result.packet
                                     if (packet != null) {

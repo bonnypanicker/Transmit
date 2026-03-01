@@ -145,6 +145,9 @@ fun OpticalCommScreen(
                 else      -> "—"
             }
             Text("Detection: $modeLabel")
+            if (receiverState.debug.isNotEmpty()) {
+                Text("Pipeline: ${receiverState.debug}", fontSize = 12.sp)
+            }
             Spacer(Modifier.height(6.dp))
             OutlinedTextField(
                 value = receiverState.lastMessage,

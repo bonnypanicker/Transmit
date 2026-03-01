@@ -13,5 +13,6 @@ data class ReceiverState(
     val signal: Float = 0f,
     val locked: Boolean = false,
     val errorRate: Float = 0f,
-    val detectionMode: String = ""
+    val detectionMode: String = "",
+    val debug: String = ""
 )
