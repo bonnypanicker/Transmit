@@ -73,9 +73,19 @@ class RxPipeline(
         // Clock recovery already averages within each bit period cleanly.
         pendingFrameBrightness.add(signal)
 
-        // Clock recovery: accumulate frames within a bit period
+        // Phase Locked Loop (PLL) Clock Recovery
+        // We detect sharp edges to resynchronize our sampling window with the transmitter.
+        val lastSignal = if (pendingFrameBrightness.size > 1) pendingFrameBrightness[pendingFrameBrightness.size - 2] else signal
+        val isEdge = kotlin.math.abs(signal - lastSignal) > 60f
+        
         val elapsed = timestampMs - lastBitBoundaryMs
-        if (elapsed < bitDurationMs && lastBitBoundaryMs != 0L) {
+        val timeUp = elapsed >= bitDurationMs
+        // If we see an edge and we are heavily into the symbol duration, force early sync
+        val edgeTrigger = isEdge && elapsed >= (bitDurationMs * 0.6f)
+        
+        val forceBoundary = timeUp || edgeTrigger
+
+        if (!forceBoundary && lastBitBoundaryMs != 0L) {
             val debugStr = buildDebugString()
             return RxFrameResult(
                 packet = null, signal = signal,
@@ -84,10 +94,22 @@ class RxPipeline(
             )
         }
 
-        // Bit boundary — average accumulated frames into one symbol
+        // Bit boundary reached
         lastBitBoundaryMs = timestampMs
-        val avgSignal = pendingFrameBrightness.average().toFloat()
-        pendingFrameBrightness.clear()
+        
+        // If it was an edge trigger, the current frame (which triggered the edge) belongs to the NEW symbol.
+        val framesForCurrentSymbol = if (edgeTrigger && pendingFrameBrightness.size > 1) {
+            val valid = ArrayList(pendingFrameBrightness.take(pendingFrameBrightness.size - 1))
+            pendingFrameBrightness.clear()
+            pendingFrameBrightness.add(signal)
+            valid
+        } else {
+            val valid = ArrayList(pendingFrameBrightness)
+            pendingFrameBrightness.clear()
+            valid
+        }
+        
+        val avgSignal = if (framesForCurrentSymbol.isNotEmpty()) framesForCurrentSymbol.average().toFloat() else signal
         lastAvgSignal = avgSignal
 
         val thresh = threshold.update(avgSignal, isLocked = locked)
