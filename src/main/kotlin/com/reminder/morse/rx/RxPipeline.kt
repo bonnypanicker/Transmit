@@ -1,5 +1,6 @@
 package com.reminder.morse.rx
 
+import com.reminder.morse.core.Manchester
 import com.reminder.morse.core.ParsedPacket
 import com.reminder.morse.core.Protocol
 
@@ -22,6 +23,7 @@ class RxPipeline(
     private var locked = false
     private var lastBitBoundaryMs = 0L
     private val pendingFrameBrightness = ArrayList<Float>()
+    private var receivedSymbolCount = 0  // symbols received since lock, for timeout
 
     /* ---- Manual lock delegation ---- */
 
@@ -46,6 +48,7 @@ class RxPipeline(
         pendingFrameBrightness.clear()
         locked = false
         lastBitBoundaryMs = 0L
+        receivedSymbolCount = 0
     }
 
     /* ---- Frame processing ---- */
@@ -78,25 +81,71 @@ class RxPipeline(
         val symbol = OnOffDetector.detect(avgSignal, thresh)
         symbolBuffer.add(symbol)
 
-        val start = PreambleDetector.findStart(symbolBuffer, Protocol.preambleSymbols, maxErrors = 2)
         var packet: ParsedPacket? = null
 
-        if (start >= 0) {
-            val decodeStart = start + Protocol.preambleSymbols.size
-            val bits = manchesterDecoder.decode(symbolBuffer, decodeStart)
-            if (decodeStart > 0) symbolBuffer.subList(0, decodeStart).clear()
-            packet = assembler.appendBits(bits)
-            locked = true
-            if (packet != null) {
+        if (!locked) {
+            // ── SEARCHING state: scan for preamble ──
+            val start = PreambleDetector.findStart(
+                symbolBuffer, Protocol.preambleSymbols, maxErrors = 2
+            )
+            if (start >= 0) {
+                val decodeStart = start + Protocol.preambleSymbols.size
+                val bits = manchesterDecoder.decode(symbolBuffer, decodeStart)
+
+                // Clear everything — we extracted what we need from the buffer
+                symbolBuffer.clear()
+                receivedSymbolCount = 0
+
+                if (bits.isNotEmpty()) {
+                    packet = assembler.appendBits(bits)
+                }
+                locked = true
+
+                if (packet != null) {
+                    assembler.reset()
+                    locked = false
+                }
+            } else {
+                // Prevent unbounded growth while searching
+                if (symbolBuffer.size > 512) {
+                    symbolBuffer.subList(0, symbolBuffer.size - 64).clear()
+                }
+            }
+        } else {
+            // ── RECEIVING state: keep feeding symbols to the Manchester decoder ──
+            receivedSymbolCount++
+
+            if (symbolBuffer.size >= 2) {
+                // Decode complete pairs, keep any leftover odd symbol
+                val pairCount = symbolBuffer.size / 2
+                val consumeCount = pairCount * 2
+                val bits = manchesterDecoder.decode(symbolBuffer, 0)
+
+                if (consumeCount > 0) {
+                    symbolBuffer.subList(0, consumeCount).clear()
+                }
+
+                if (bits.isNotEmpty()) {
+                    packet = assembler.appendBits(bits)
+                }
+
+                if (packet != null) {
+                    assembler.reset()
+                    symbolBuffer.clear()
+                    locked = false
+                    receivedSymbolCount = 0
+                }
+            }
+
+            // Timeout: if we've received too many symbols without completing
+            // a packet, something went wrong — go back to searching
+            // (max packet ~ 255 bytes = 2040 bits = 4080 Manchester symbols)
+            if (receivedSymbolCount > 4200) {
                 assembler.reset()
                 symbolBuffer.clear()
                 locked = false
+                receivedSymbolCount = 0
             }
-        } else {
-            if (symbolBuffer.size > 512) {
-                symbolBuffer.subList(0, symbolBuffer.size - 64).clear()
-            }
-            locked = false
         }
 
         return RxFrameResult(
